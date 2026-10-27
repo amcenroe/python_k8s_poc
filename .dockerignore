@@ -1,0 +1,11 @@
+# Keep the build context minimal and reproducible.
+.git
+.gitignore
+.venv
+__pycache__
+*.py[cod]
+*.md
+k8s/
+scripts/
+Dockerfile
+.dockerignore

@@ -1,0 +1,156 @@
+# GKE Load Balancing PoC — Deployment + external Service.
+#
+# Replace IMAGE_PLACEHOLDER with the full Artifact Registry image URL, e.g.:
+#   asia-southeast2-docker.pkg.dev/my-project/python-poc/pod-info:v1
+#
+# The deployment deliberately asks the scheduler to place the two replicas on
+# different nodes. Requires at least two schedulable nodes (see README).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pod-info
+  labels:
+    app.kubernetes.io/name: pod-info
+    app.kubernetes.io/instance: python-poc
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: gke-load-balancing-poc
+    app.kubernetes.io/version: "v1"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  progressDeadlineSeconds: 120
+  minReadySeconds: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pod-info
+      app.kubernetes.io/instance: python-poc
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pod-info
+        app.kubernetes.io/instance: python-poc
+        app.kubernetes.io/component: web
+        app.kubernetes.io/part-of: gke-load-balancing-poc
+        app.kubernetes.io/version: "v1"
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # Hard spread across nodes. With replicas: 2 and two schedulable nodes,
+      # Kubernetes places exactly one pod on each node. Switch to ScheduleAnyway
+      # if the cluster has only one node and strict HA is not required.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: pod-info
+              app.kubernetes.io/instance: python-poc
+      containers:
+        - name: pod-info
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3002
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "3002"
+            - name: APP_VERSION
+              value: "v1"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+            successThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pod-info
+  labels:
+    app.kubernetes.io/name: pod-info
+    app.kubernetes.io/instance: python-poc
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: gke-load-balancing-poc
+spec:
+  type: LoadBalancer
+  sessionAffinity: None
+  # Cluster keeps every node eligible as a load-balancer backend. This is the
+  # default, but explicit here because it affects the PoC traffic path.
+  externalTrafficPolicy: Cluster
+  selector:
+    app.kubernetes.io/name: pod-info
+    app.kubernetes.io/instance: python-poc
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: http
