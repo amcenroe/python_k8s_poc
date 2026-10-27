@@ -86,7 +86,7 @@ python_k8s_poc/
 ├── k8s/
 │   └── app.yaml           # Deployment (replicas: 2) + Service (LoadBalancer)
 ├── scripts/
-│   ├── deploy.sh          # Build, push ke GAR, deploy, tunggu External IP
+│   ├── deploy.sh          # Siapkan GCP/GKE, build, deploy, dan verifikasi
 │   ├── verify.sh          # Bukti otomatis: hit endpoint, hitung Pod unik
 │   └── destroy.sh         # Hapus workload + cluster, opsi hapus GAR
 └── README.md
@@ -325,16 +325,18 @@ kubectl get nodes
 
 Output yang diharapkan: **2 node** dengan status `Ready`.
 
-> **Opsional (least privilege):** jika node pool memakai Compute Engine default service account, beri izin baca Artifact Registry agar node bisa pull image:
+> **Izin pull image:** node service account harus dapat membaca repository Artifact Registry. Script deploy menambahkan izin baca hanya pada repository yang digunakan. Untuk membuatnya manual, jalankan:
 >
 > ```bash
 > PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
-> gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+> gcloud artifacts repositories add-iam-policy-binding "${REPO}" \
+>   --location="${REGION}" \
 >   --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
->   --role="roles/artifactregistry.reader"
+>   --role="roles/artifactregistry.reader" \
+>   --project="${PROJECT_ID}"
 > ```
 >
-> Jika node pool memakai service account khusus, berikan role tersebut ke service account node pool yang dipakai.
+> Jika node pool memakai service account khusus, ganti alamat service account pada perintah dengan service account node pool tersebut.
 
 ### 8.5 Build dan push image ke Google Artifact Registry
 
@@ -591,26 +593,26 @@ kubectl describe service pod-info
 
 ## 10. Menjalankan dengan Script
 
-Jika cluster sudah dibuat, seluruh alur build–push–deploy–verifikasi dapat dijalankan dengan:
+Jalankan satu perintah berikut dari root repository. Jika cluster belum ada, script akan membuatnya otomatis:
 
 ```bash
 PROJECT_ID="your-project-id" \
-REGION="asia-southeast2" \
-LOCATION="asia-southeast2-a" \
-CLUSTER="python-poc-cluster" \
 ./scripts/deploy.sh
 ```
 
 Script akan:
-
-1. memvalidasi cluster dan tool yang dibutuhkan,
+1. mengaktifkan API GKE, Artifact Registry, dan Compute Engine,
 2. membuat Artifact Registry repository jika belum ada,
-3. build image `linux/amd64`,
-4. push image dengan tag unik (timestamp),
-5. render `IMAGE_PLACEHOLDER` lalu apply manifest,
-6. menunggu rollout,
-7. menunggu External IP,
+3. membuat cluster GKE zonal 2 node jika belum ada (atau menggunakan cluster yang sudah ada),
+4. menunggu minimal 2 node siap dan memberi service account node akses baca ke repository image,
+5. build image `linux/amd64` dan push dengan tag unik (timestamp),
+6. render `IMAGE_PLACEHOLDER` lalu apply manifest,
+7. menunggu rollout dan External IP Load Balancer,
 8. menjalankan `scripts/verify.sh`.
+
+Default cluster: `asia-southeast2-a`, 2 node `e2-small`, disk 30 GB. Atur `LOCATION`, `REGION`, `CLUSTER`, `MACHINE_TYPE`, `NUM_NODES` (minimal 2), atau `DISK_SIZE` sesuai kebutuhan. Perintah ini membutuhkan login `gcloud`, billing aktif, dan izin untuk mengaktifkan API, membuat cluster/repository, serta mengubah IAM policy repository Artifact Registry.
+
+> **Biaya:** deploy otomatis dapat membuat VM GKE, disk, dan Load Balancer ber-IP publik. Resource cluster tetap berjalan setelah script selesai dan terus menimbulkan biaya sampai dihapus. Setelah selesai mencoba, jalankan `./scripts/destroy.sh` (Artifact Registry tetap dipertahankan secara default).
 
 Verifikasi ulang kapan saja:
 
@@ -628,8 +630,6 @@ Untuk menghapus semua resource setelah selesai:
 ./scripts/destroy.sh --yes         # non-interaktif (CI/automation)
 ./scripts/destroy.sh --yes --delete-repo  # sekaligus hapus GAR (permanen)
 ```
-
-> `deploy.sh` **tidak** membuat cluster GKE secara otomatis untuk menghindari biaya tak terduga. Buat cluster terlebih dahulu (langkah 8.4).
 
 ---
 

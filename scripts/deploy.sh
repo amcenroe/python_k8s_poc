@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Build, push, and deploy the PoC to an existing GKE cluster.
+# Provision GCP prerequisites, build, push, and deploy the PoC to GKE.
 #
 # Required:
 #   gcloud auth login
 #   gcloud config set project YOUR_PROJECT_ID
-#   A GKE cluster with >= 2 schedulable nodes (see README).
+#   An active GCP project with billing enabled.
 #
 # Optional environment variables:
-#   PROJECT_ID, REGION, LOCATION, CLUSTER, REPO, TAG, PLATFORM
+#   PROJECT_ID, REGION, LOCATION, CLUSTER, REPO, TAG, PLATFORM,
+#   MACHINE_TYPE, NUM_NODES, DISK_SIZE
 set -Eeuo pipefail
 
 PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || true)}"
@@ -17,6 +18,9 @@ CLUSTER="${CLUSTER:-python-poc-cluster}"
 REPO="${REPO:-python-poc}"
 TAG="${TAG:-$(date +%Y%m%d-%H%M%S)}"
 PLATFORM="${PLATFORM:-linux/amd64}"
+MACHINE_TYPE="${MACHINE_TYPE:-e2-small}"
+NUM_NODES="${NUM_NODES:-2}"
+DISK_SIZE="${DISK_SIZE:-30}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/pod-info:${TAG}"
@@ -32,30 +36,97 @@ if [[ -z "$PROJECT_ID" || "$PROJECT_ID" == "(unset)" ]]; then
   die "PROJECT_ID belum diset. Jalankan: export PROJECT_ID=... atau gcloud config set project ..."
 fi
 
+[[ "$NUM_NODES" =~ ^[0-9]+$ ]] && (( 10#$NUM_NODES >= 2 )) \
+  || die "NUM_NODES minimal 2 agar kedua Pod bisa dijadwalkan pada node berbeda."
+
 log "Project : $PROJECT_ID"
 log "Cluster : $CLUSTER ($LOCATION)"
 log "Image   : $IMAGE"
+log "Node    : $NUM_NODES x $MACHINE_TYPE"
 
-gcloud container clusters describe "$CLUSTER" \
+log "Memastikan API GCP yang dibutuhkan aktif..."
+gcloud services enable \
+  container.googleapis.com \
+  artifactregistry.googleapis.com \
+  compute.googleapis.com \
+  --project "$PROJECT_ID"
+
+log "Memastikan Artifact Registry repository ada..."
+if ! REPO_OUTPUT="$(gcloud artifacts repositories describe "$REPO" \
+  --location "$REGION" \
+  --project "$PROJECT_ID" 2>&1)"; then
+  if grep -qiE 'not[ -]?found|NOT_FOUND|404' <<<"$REPO_OUTPUT"; then
+    gcloud artifacts repositories create "$REPO" \
+      --repository-format docker \
+      --location "$REGION" \
+      --description "GKE load balancing PoC images" \
+      --project "$PROJECT_ID"
+  else
+    printf '%s\n' "$REPO_OUTPUT" >&2
+    die "Gagal memeriksa Artifact Registry. Periksa region dan izin GCP."
+  fi
+fi
+
+log "Memeriksa cluster GKE..."
+if ! CLUSTER_OUTPUT="$(gcloud container clusters describe "$CLUSTER" \
   --location "$LOCATION" \
-  --project "$PROJECT_ID" >/dev/null \
-  || die "Cluster '$CLUSTER' tidak ditemukan di $LOCATION. Buat cluster dulu (lihat README)."
+  --project "$PROJECT_ID" 2>&1)"; then
+  if grep -qiE 'not[ -]?found|NOT_FOUND|404' <<<"$CLUSTER_OUTPUT"; then
+    log "Cluster belum ada; membuat cluster GKE (${NUM_NODES} node, ${MACHINE_TYPE})..."
+    echo "PERHATIAN: pembuatan cluster GKE dan Load Balancer menimbulkan biaya GCP." >&2
+    gcloud container clusters create "$CLUSTER" \
+      --zone "$LOCATION" \
+      --num-nodes "$NUM_NODES" \
+      --machine-type "$MACHINE_TYPE" \
+      --disk-size "$DISK_SIZE" \
+      --release-channel regular \
+      --project "$PROJECT_ID"
+  else
+    printf '%s\n' "$CLUSTER_OUTPUT" >&2
+    die "Gagal memeriksa cluster. Periksa project, lokasi, dan izin GCP."
+  fi
+else
+  log "Cluster sudah ada; akan digunakan kembali."
+fi
 
 log "Mengambil kredensial cluster..."
 gcloud container clusters get-credentials "$CLUSTER" \
   --location "$LOCATION" \
   --project "$PROJECT_ID"
 
-log "Memastikan Artifact Registry repository ada..."
-if ! gcloud artifacts repositories describe "$REPO" \
-  --location "$REGION" \
-  --project "$PROJECT_ID" >/dev/null 2>&1; then
-  gcloud artifacts repositories create "$REPO" \
-    --repository-format docker \
-    --location "$REGION" \
-    --description "GKE load balancing PoC images" \
-    --project "$PROJECT_ID"
+log "Menunggu node siap..."
+kubectl wait --for=condition=Ready nodes --all --timeout=300s
+READY_NODES="$(kubectl get nodes --no-headers | awk '$2 == "Ready" {count++} END {print count+0}')"
+if (( READY_NODES < 2 )); then
+  die "Cluster hanya memiliki ${READY_NODES} node Ready; minimal 2 node diperlukan."
 fi
+
+log "Memberi node pool akses baca terbatas ke repository image..."
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+NODE_POOLS="$(gcloud container node-pools list \
+  --cluster "$CLUSTER" \
+  --location "$LOCATION" \
+  --project "$PROJECT_ID" \
+  --format='value(name)')"
+[[ -n "$NODE_POOLS" ]] || die "Tidak ada node pool pada cluster '$CLUSTER'."
+
+while IFS= read -r NODE_POOL; do
+  [[ -n "$NODE_POOL" ]] || continue
+  NODE_SERVICE_ACCOUNT="$(gcloud container node-pools describe "$NODE_POOL" \
+    --cluster "$CLUSTER" \
+    --location "$LOCATION" \
+    --project "$PROJECT_ID" \
+    --format='value(config.serviceAccount)')"
+  if [[ -z "$NODE_SERVICE_ACCOUNT" || "$NODE_SERVICE_ACCOUNT" == "default" ]]; then
+    NODE_SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+  fi
+  gcloud artifacts repositories add-iam-policy-binding "$REPO" \
+    --location "$REGION" \
+    --member "serviceAccount:${NODE_SERVICE_ACCOUNT}" \
+    --role roles/artifactregistry.reader \
+    --project "$PROJECT_ID" \
+    --quiet >/dev/null
+done <<< "$NODE_POOLS"
 
 log "Mengonfigurasi Docker auth untuk Artifact Registry..."
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
@@ -78,16 +149,16 @@ kubectl rollout status deployment/pod-info --timeout=180s
 echo
 kubectl get pods -l app.kubernetes.io/name=pod-info -o wide
 
-log "Menunggu External IP dari GCP Load Balancer (maks. 3 menit)..."
+log "Menunggu External IP dari GCP Load Balancer (maks. 10 menit)..."
 EXTERNAL_IP=""
-for ((i=0; i<36; i++)); do
+for ((i=0; i<120; i++)); do
   EXTERNAL_IP="$(kubectl get service pod-info -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
   [[ -n "$EXTERNAL_IP" ]] && break
   sleep 5
 done
 
 if [[ -z "$EXTERNAL_IP" ]]; then
-  echo "ERROR: External IP belum tersedia setelah 3 menit." >&2
+  echo "ERROR: External IP belum tersedia setelah 10 menit." >&2
   echo "Cek dengan: kubectl get service pod-info -w" >&2
   exit 1
 fi
