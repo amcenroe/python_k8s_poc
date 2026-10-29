@@ -19,21 +19,25 @@ flowchart LR
     subgraph Persiapan["Persiapan oleh deployer (saat deploy)"]
         SRC["Kode aplikasi"] --> BUILD["Docker membuat satu image<br/>Aplikasi + Python"]
         BUILD --> DEPLOY["Deployment Kubernetes<br/>menentukan jumlah replika"]
+    end
+
+    subgraph GKE["Infrastruktur aplikasi (dikelola oleh Kubernetes / GKE)"]
         DEPLOY --> POD1["Pod 1<br/>Container aplikasi"]
         DEPLOY --> POD2["Pod 2<br/>Container aplikasi"]
         DEPLOY --> POD3["Pod 3 ... Pod ke-N<br/>Container aplikasi"]
+        LB["Load balancer<br/>External IP"] -->|"Meneruskan traffic ke salah satu Pod"| POD1
+        LB --> POD2
+        LB --> POD3
     end
 
     subgraph Penggunaan["Penggunaan oleh pengguna"]
-        USER["Pengguna"] -->|"Buka URL di browser"| URL["Alamat aplikasi<br/>http://&lt;EXTERNAL_IP&gt;/"]
-        URL --> LB["Load balancer"]
-        LB -->|"Pilih salah satu Pod"| POD1
-        LB -->|"Pilih salah satu Pod"| POD2
-        LB -->|"Pilih salah satu Pod"| POD3
-        POD1 -->|"Halaman aplikasi"| USER
-        POD2 -->|"Halaman aplikasi"| USER
-        POD3 -->|"Halaman aplikasi"| USER
+        USER["Pengguna<br/>Browser"]
     end
+
+    USER -->|"Membuka URL aplikasi"| LB
+    POD1 -->|"Halaman aplikasi"| USER
+    POD2 -->|"Halaman aplikasi"| USER
+    POD3 -->|"Halaman aplikasi"| USER
 ```
 
 Semua Pod menjalankan container aplikasi dari **image yang sama**. Kubernetes dapat membuat beberapa replika sesuai konfigurasi, dan load balancer mengarahkan pengguna ke salah satu Pod yang siap. Diagram menunjukkan konsep banyak replika; pada PoC ini jumlahnya dikonfigurasi menjadi **dua Pod**. Pengguna cukup membuka URL—tidak perlu masuk ke container atau menyiapkan lingkungan Python sendiri.
