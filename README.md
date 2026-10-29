@@ -4,13 +4,39 @@ Proof of Concept (PoC) untuk membuktikan secara **visual** dan **teknis** bahwa 
 
 Aplikasi hanya memakai **Python standard library** (tanpa dependency eksternal), berjalan di port **3002**, dan menampilkan **nama Pod**, **IP Pod**, serta **node** yang melayani request secara dinamis.
 
-## Ringkasan:
+## Ringkasan
 
 - PoC ini menjalankan aplikasi web Python di Google Kubernetes Engine (GKE). Docker mengemas aplikasi dan Python ke dalam image, lalu Kubernetes menjalankannya di dua Pod dan membagikan traffic melalui satu alamat publik.
 - Setelah proses deployment berhasil dan **External IP** tersedia, pengguna cukup membuka URL aplikasi tersebut di browser, misalnya `http://<EXTERNAL_IP>/`. Halaman akan menampilkan informasi Pod yang melayani permintaan.
 - Pengguna aplikasi **tidak perlu membuka atau masuk ke container**, membuat virtual environment, memasang Python atau dependency, maupun menjalankan server secara manual. Semua itu sudah disiapkan di image Docker dan dijalankan oleh Kubernetes.
 - Perintah Docker, `gcloud`, dan `kubectl` di README ini adalah untuk orang yang menyiapkan, mengelola, atau menguji deployment—bukan langkah yang harus dilakukan setiap kali menggunakan aplikasi.
 - Untuk mencoba deployment yang sudah ada, cukup gunakan URL-nya. Untuk membuat deployment baru atau memperbarui aplikasi, ikuti bagian [Langkah Eksekusi & Deployment](#8-langkah-eksekusi--deployment); setelah selesai mencoba, hapus resource cloud sesuai bagian [Cleanup](#12-cleanup) agar biaya tidak terus berjalan.
+
+### Gambaran sederhana
+
+```mermaid
+flowchart LR
+    subgraph Persiapan["Persiapan oleh deployer (saat deploy)"]
+        SRC["Kode aplikasi"] --> BUILD["Docker membuat satu image<br/>Aplikasi + Python"]
+        BUILD --> DEPLOY["Deployment Kubernetes<br/>menentukan jumlah replika"]
+        DEPLOY --> POD1["Pod 1<br/>Container aplikasi"]
+        DEPLOY --> POD2["Pod 2<br/>Container aplikasi"]
+        DEPLOY --> POD3["Pod 3 ... Pod ke-N<br/>Container aplikasi"]
+    end
+
+    subgraph Penggunaan["Penggunaan oleh pengguna"]
+        USER["Pengguna"] -->|"Buka URL di browser"| URL["Alamat aplikasi<br/>http://&lt;EXTERNAL_IP&gt;/"]
+        URL --> LB["Load balancer"]
+        LB -->|"Pilih salah satu Pod"| POD1
+        LB -->|"Pilih salah satu Pod"| POD2
+        LB -->|"Pilih salah satu Pod"| POD3
+        POD1 -->|"Halaman aplikasi"| USER
+        POD2 -->|"Halaman aplikasi"| USER
+        POD3 -->|"Halaman aplikasi"| USER
+    end
+```
+
+Semua Pod menjalankan container aplikasi dari **image yang sama**. Kubernetes dapat membuat beberapa replika sesuai konfigurasi, dan load balancer mengarahkan pengguna ke salah satu Pod yang siap. Diagram menunjukkan konsep banyak replika; pada PoC ini jumlahnya dikonfigurasi menjadi **dua Pod**. Pengguna cukup membuka URL—tidak perlu masuk ke container atau menyiapkan lingkungan Python sendiri.
 
 Singkatnya: **deployment menyiapkan dan menjalankan aplikasi; pengguna tinggal membuka URL dan memakai aplikasi.**
 
