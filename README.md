@@ -4,10 +4,21 @@ Proof of Concept (PoC) untuk membuktikan secara **visual** dan **teknis** bahwa 
 
 Aplikasi hanya memakai **Python standard library** (tanpa dependency eksternal), berjalan di port **3002**, dan menampilkan **nama Pod**, **IP Pod**, serta **node** yang melayani request secara dinamis.
 
+## Ringkasan:
+
+- PoC ini menjalankan aplikasi web Python di Google Kubernetes Engine (GKE). Docker mengemas aplikasi dan Python ke dalam image, lalu Kubernetes menjalankannya di dua Pod dan membagikan traffic melalui satu alamat publik.
+- Setelah proses deployment berhasil dan **External IP** tersedia, pengguna cukup membuka URL aplikasi tersebut di browser, misalnya `http://<EXTERNAL_IP>/`. Halaman akan menampilkan informasi Pod yang melayani permintaan.
+- Pengguna aplikasi **tidak perlu membuka atau masuk ke container**, membuat virtual environment, memasang Python atau dependency, maupun menjalankan server secara manual. Semua itu sudah disiapkan di image Docker dan dijalankan oleh Kubernetes.
+- Perintah Docker, `gcloud`, dan `kubectl` di README ini adalah untuk orang yang menyiapkan, mengelola, atau menguji deployment—bukan langkah yang harus dilakukan setiap kali menggunakan aplikasi.
+- Untuk mencoba deployment yang sudah ada, cukup gunakan URL-nya. Untuk membuat deployment baru atau memperbarui aplikasi, ikuti bagian [Langkah Eksekusi & Deployment](#8-langkah-eksekusi--deployment); setelah selesai mencoba, hapus resource cloud sesuai bagian [Cleanup](#12-cleanup) agar biaya tidak terus berjalan.
+
+Singkatnya: **deployment menyiapkan dan menjalankan aplikasi; pengguna tinggal membuka URL dan memakai aplikasi.**
+
 ---
 
 ## Daftar Isi
 
+0. [Ringkasan untuk Pemula](#ringkasan-untuk-pemula)
 1. [Tujuan PoC](#1-tujuan-poc)
 2. [Arsitektur](#2-arsitektur)
 3. [Struktur Repository](#3-struktur-repository)
